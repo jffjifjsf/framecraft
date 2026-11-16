@@ -1,7 +1,15 @@
 name: iOS 编译校验
 
-# 只做一件事：在 macOS 上编一遍，回答"这些代码到底能不能编译"。
-# 不签名、不打包 IPA、不需要 Apple 开发者账号。
+# 只做一件事：在云端 macOS 上编一遍，回答"这些代码到底能不能编译"。
+# 不签名、不打包 IPA、不需要 Apple 开发者账号、不需要本机有 Mac。
+#
+# 版本说明（2026-11 核对，勿随意改回）：
+#   - runs-on 用 macos-15：macos-14 已于 2026-11-02 被 GitHub 完全退役，
+#     用 macos-14 会直接 "the label was not found" 失败，与代码无关。
+#     macos-15 自带 Xcode 16.x；工程 SWIFT_VERSION=5.0，因此以 Swift 5
+#     语言模式编译，不会被 Swift 6 的严格并发检查判死。
+#   - actions/* 必须 v5 起：Node 20 已于 2026-09-23 从 runner 移除，
+#     checkout@v4 / upload-artifact@v4 现在一跑就报运行时错误。
 
 on:
   push:
@@ -12,16 +20,17 @@ on:
 jobs:
   compile:
     name: 模拟器编译（不签名）
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: 显示可用 Xcode
+      - name: 显示工具链
         run: |
           ls /Applications | grep -i xcode || true
           xcodebuild -version
+          swift --version
 
       # ① 先验证工程文件能被解析。手写的 project.pbxproj 如果结构有错，
       #    这一步会立刻报出来，不必等完整编译
@@ -52,25 +61,43 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build/build.log
 
-      # ③ 把 error 汇总到 Actions 摘要页，不用在几千行日志里翻
+      # ③ 把 error 汇总到 Actions 摘要页，不用在几千行日志里翻。
+      #    if: always() 保证编译失败时这一步照样跑 —— 失败时最需要它
       - name: 汇总编译错误
         if: always()
         run: |
+          mkdir -p build
+          touch build/build.log
           {
             echo "## 编译结果"
-            if [ -f build/build.log ] && grep -q "BUILD SUCCEEDED" build/build.log; then
-              echo 'BUILD SUCCEEDED'
+            echo
+            if grep -q "BUILD SUCCEEDED" build/build.log; then
+              echo "**BUILD SUCCEEDED** —— 所有 Swift 文件通过类型检查"
+              echo
+              echo "工具链：$(xcodebuild -version | head -1)"
             else
-              echo 'BUILD FAILED'
+              echo "**BUILD FAILED**"
+              echo
+              echo "### 编译器报错"
+              echo
               echo '```'
-              grep -E "error:" build/build.log | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' | sort -u | head -60
+              if grep -qE "error:" build/build.log; then
+                grep -E "error:" build/build.log \
+                  | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' \
+                  | sed -E 's|^.*/FrameCraft/||' \
+                  | sort -u | head -60
+              else
+                echo "（没有出现 error: 行 —— 说明失败在更早的阶段）"
+                grep -iE "error|failed|not found|damaged|cannot|unable" build/build.log \
+                  | head -30
+              fi
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传完整日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: build-log
           path: build/build.log
