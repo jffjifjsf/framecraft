@@ -51,13 +51,24 @@ if (-not $openssl) {
     $plist = $null
 } else {
     $tmp = Join-Path $env:TEMP ("fc_profile_{0}.plist" -f (Get-Random))
-    & $openssl cms -verify -noverify -inform der -in $Profile -out $tmp 2>$null | Out-Null
-    if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 100) {
-        & $openssl smime -verify -noverify -inform der -in $Profile -out $tmp 2>$null | Out-Null
+
+    # openssl 成功时也会往 stderr 写一行 "CMS Verification successful"，
+    # 而脚本开头是 Stop 模式，native 命令的 stderr 会被当成致命错误 —— 这里必须临时放宽
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $openssl cms -verify -noverify -inform der -in $Profile -out $tmp 2>$null | Out-Null
+        if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 100) {
+            & $openssl smime -verify -noverify -inform der -in $Profile -out $tmp 2>$null | Out-Null
+        }
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
-    if (Test-Path $tmp) {
-        $raw = [IO.File]::ReadAllText($tmp)
-        try { $plist = [xml]$raw } catch { $plist = $null; $rawPlist = $raw }
+
+    if ((Test-Path $tmp) -and (Get-Item $tmp).Length -ge 100) {
+        $raw = [IO.File]::ReadAllText($tmp, [Text.Encoding]::UTF8)
+        try { $plist = [xml]$raw } catch { $plist = $null }
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
     } else { $plist = $null }
 }
 
@@ -66,6 +77,9 @@ if ($plist) {
     function PlistVal($node, $key) {
         $n = $node.SelectSingleNode("//key[.='$key']/following-sibling::*[1]")
         if (-not $n) { return $null }
+        # <true/> / <false/> 是空元素，InnerText 为空串，必须看节点名
+        if ($n.Name -eq 'true')  { return 'true' }
+        if ($n.Name -eq 'false') { return 'false' }
         if ($n.Name -eq 'array') { return @($n.ChildNodes | ForEach-Object { $_.InnerText }) }
         if ($n.Name -eq 'dict')   { return $n }
         return $n.InnerText
@@ -81,13 +95,15 @@ if ($plist) {
     $info.GetTask= if ($ents) { PlistVal $ents 'get-task-allow' } else { $null }
     $devs = PlistVal $d 'ProvisionedDevices'
     $info.Devices = @($devs | Where-Object { $_ })
+    # 空数组在 PowerShell 里是假值，必须先算成数字再判断
+    $info.DevCount = if ($info.Devices) { $info.Devices.Count } else { 0 }
 
     Line ("       名称      : {0}" -f $info.Name)
     Line ("       UUID      : {0}" -f $info.UUID)
     Line ("       团队      : {0}" -f $info.Team)
     Line ("       App ID    : {0}" -f $info.AppId)
     Line ("       过期时间  : {0}" -f $info.Exp)
-    Line ("       登记设备  : {0} 台" -f $info.Devices.Count)
+    Line ("       登记设备  : {0} 台" -f $info.DevCount)
     $kind = if ($info.AllDev -eq 'true') { '企业（in-house）' }
             elseif ($info.GetTask -eq 'true') { '开发（development）' }
             else { 'Ad-Hoc' }
@@ -123,9 +139,11 @@ if ($info.Exp) {
     } catch { }
 }
 
-if ($info.Devices -and $info.Devices.Count -eq 0 -and $info.AllDev -ne 'true' -and $info.GetTask -ne 'true') {
-    Line '       [问题] 描述文件没有登记任何设备，装到 iPhone 会报「无法安装」'
-    Line '              去 developer.apple.com → Devices 添加 UDID，再重新生成描述文件'
+if ($info.DevCount -eq 0 -and $info.AllDev -ne 'true' -and $info.GetTask -ne 'true') {
+    Line '       [问题] 描述文件里登记的设备数为 0'
+    Line '              这类描述文件（App Store 类型）签出来的 IPA 不能直装 iPhone。'
+    Line '              直装需要 development / ad-hoc 描述文件，且你的 UDID 已在里面：'
+    Line '              developer.apple.com → Devices 添加 UDID → 重新生成描述文件'
     $problems++
 }
 
@@ -175,4 +193,4 @@ Line ' 加完后：仓库 Actions → 左侧「iOS 签名打包」→ Run workfl
 Line ' 成功后在该次运行页面底部下载 FrameCraft-ipa 压缩包，里面就是 .ipa'
 Line ''
 Line 'Press any key to exit...'
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }

@@ -151,6 +151,7 @@ jobs:
         if: success()
         run: |
           set -o pipefail
+          mkdir -p build
           METHOD="${{ github.event.inputs.export_method }}"
           if [ -z "$METHOD" ] || [ "$METHOD" = "auto" ]; then METHOD="$AUTO_METHOD"; fi
           echo "EXPORT_METHOD=$METHOD" >> "$GITHUB_ENV"
