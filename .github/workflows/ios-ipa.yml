@@ -1,247 +1,139 @@
-name: iOS 签名打包
+name: iOS 无签名 IPA
 
-# 只在手动触发时跑：需要仓库 Secrets 里已配好证书，
-# 缺 secret 时这里会给出明确提示，而不是让每次 push 都红一片。
+# 产出可自签的 .ipa：不签名、不导出、不需要证书和账号。
+# 结构是标准的 Payload/FrameCraft.app，签名工具（轻松签 / 全能签 / Sideloadly / TrollStore）直接能签。
 #
-# 需要的 4 个 Secrets（用 signing/prepare-secrets.ps1 生成）：
-#   BUILD_CERTIFICATE_BASE64        .p12 的 base64
-#   P12_PASSWORD                    .p12 的导出密码
-#   BUILD_PROVISION_PROFILE_BASE64  .mobileprovision 的 base64
-#   KEYCHAIN_PASSWORD               随便一串随机字符（临时钥匙串用，用完销毁）
+# 每次 push 到 main 自动跑一次；也可以在 Actions 页面手动 Run workflow。
 
 on:
   workflow_dispatch:
-    inputs:
-      export_method:
-        description: "导出方式（留 auto 自动判断）"
-        required: false
-        default: auto
-        type: choice
-        options: [auto, development, ad-hoc, app-store, enterprise]
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - '.gitattributes'
 
 permissions:
   contents: read
 
 jobs:
   ipa:
-    name: 签名打包 IPA
+    name: 编译并打包未签名 IPA
     runs-on: macos-15
     timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v5
 
-      # ---------- 0. 先把缺什么说清楚，别等到最后一步才报错 ----------
-      - name: 检查 Secrets
-        env:
-          CERT: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12P: ${{ secrets.P12_PASSWORD }}
-          PROF: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
-          KC: ${{ secrets.KEYCHAIN_PASSWORD }}
+      - name: 显示工具链
         run: |
-          set -e
-          miss=0
-          if [ -z "$CERT" ]; then echo "::error::缺少 secret BUILD_CERTIFICATE_BASE64（.p12 的 base64）"; miss=1; fi
-          if [ -z "$P12P" ]; then echo "::error::缺少 secret P12_PASSWORD（.p12 导出密码）"; miss=1; fi
-          if [ -z "$PROF" ]; then echo "::error::缺少 secret BUILD_PROVISION_PROFILE_BASE64（描述文件的 base64）"; miss=1; fi
-          if [ -z "$KC" ];   then echo "::error::缺少 secret KEYCHAIN_PASSWORD（随便一串随机字符）"; miss=1; fi
-          if [ $miss -ne 0 ]; then
-            echo "::error::secrets 不全，打包中止。用 signing/prepare-secrets.ps1 生成后填到仓库 Settings → Secrets and variables → Actions"
-            exit 1
-          fi
-          echo "4 个 secret 均已配置"
+          xcodebuild -version
+          sw_vers
 
-      # ---------- 1. 导入证书到临时钥匙串 ----------
-      - name: 导入签名证书
-        if: success()
-        env:
-          CERT: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-          P12P: ${{ secrets.P12_PASSWORD }}
-          KC: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-          echo -n "$CERT" | base64 --decode -o "$CERT_PATH"
-
-          security create-keychain -p "$KC" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KC" "$KEYCHAIN"
-          security import "$CERT_PATH" -P "$P12P" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KC" "$KEYCHAIN" >/dev/null
-          security list-keychain -d user -s "$KEYCHAIN"
-
-          echo "可用签名身份："
-          security find-identity -v -p codesigning "$KEYCHAIN" | sed 's/^/  /'
-
-      # ---------- 2. 安装描述文件并解析出它到底允许签什么 ----------
-      - name: 解析描述文件
-        if: success()
-        env:
-          PROF: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
-        run: |
-          set -euo pipefail
-          PP="$RUNNER_TEMP/profile.mobileprovision"
-          echo -n "$PROF" | base64 --decode -o "$PP"
-
-          security cms -D -i "$PP" > "$RUNNER_TEMP/profile.plist"
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp "$PP" ~/Library/MobileDevice/Provisioning\ Profiles/
-
-          P="$RUNNER_TEMP/profile.plist"
-          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$P")
-          NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$P")
-          TEAM=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$P")
-          APPID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$P")
-          EXP=$(/usr/libexec/PlistBuddy -c "Print :ExpirationDate" "$P")
-          DEVCNT=$(plutil -extract ProvisionedDevices raw -o - "$P" 2>/dev/null | grep -c . || true)
-          ALLDEV=$(/usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$P" 2>/dev/null || echo false)
-          GETTASK=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:get-task-allow" "$P" 2>/dev/null || echo false)
-
-          echo "PROFILE_UUID=$UUID"   >> "$GITHUB_ENV"
-          echo "PROFILE_NAME=$NAME"   >> "$GITHUB_ENV"
-          echo "TEAM_ID=$TEAM"        >> "$GITHUB_ENV"
-          echo "PROFILE_EXP=$EXP"     >> "$GITHUB_ENV"
-          echo "PROFILE_DEVCNT=$DEVCNT" >> "$GITHUB_ENV"
-
-          # application-identifier 形如 ABCD123456.com.framecraft.camera
-          BUNDLE="${APPID#*.}"
-          echo "PROFILE_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
-
-          # 导出方式：企业 → enterprise；带 get-task-allow → development；否则 ad-hoc
-          if [ "$ALLDEV" = "true" ]; then
-            AUTO_METHOD="enterprise"
-          elif [ "$GETTASK" = "true" ]; then
-            AUTO_METHOD="development"
-          else
-            AUTO_METHOD="ad-hoc"
-          fi
-          echo "AUTO_METHOD=$AUTO_METHOD" >> "$GITHUB_ENV"
-
-          # 签名身份取刚导入的那张证书的完整 CN
-          IDENTITY=$(security find-identity -v -p codesigning | head -1 | sed -E 's/^[^"]*"([^"]+)".*/\1/')
-          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
-
-          {
-            echo "### 描述文件解析结果"
-            echo
-            echo "| 项 | 值 |"
-            echo "|---|---|"
-            echo "| 名称 | $NAME |"
-            echo "| UUID | $UUID |"
-            echo "| 团队 | $TEAM |"
-            echo "| App ID | $APPID |"
-            echo "| 过期时间 | $EXP |"
-            echo "| 登记设备数 | $DEVCNT |"
-            echo "| 自动判定导出方式 | $AUTO_METHOD |"
-            echo "| 签名身份 | $IDENTITY |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$BUNDLE" = "*" ]; then
-            echo "::notice::描述文件是通配 App ID，工程原 bundle id 可直接使用"
-          elif [ "$BUNDLE" != "com.framecraft.camera" ]; then
-            echo "::warning::描述文件的 App ID 是 $BUNDLE，与工程的 com.framecraft.camera 不同，将用命令行覆盖 bundle id"
-          fi
-          if [ "$DEVCNT" = "0" ] && [ "$ALLDEV" != "true" ] && [ "$GETTASK" != "true" ]; then
-            echo "::warning::描述文件没有登记任何设备，装到手机可能失败"
-          fi
-
-      # ---------- 3. Archive ----------
-      - name: Archive
-        if: success()
+      # ---------- 1. 只编译，完全不碰签名 ----------
+      - name: 编译（Release, arm64 真机）
         run: |
           set -o pipefail
           mkdir -p build
-          METHOD="${{ github.event.inputs.export_method }}"
-          if [ -z "$METHOD" ] || [ "$METHOD" = "auto" ]; then METHOD="$AUTO_METHOD"; fi
-          echo "EXPORT_METHOD=$METHOD" >> "$GITHUB_ENV"
-
-          # 通配描述文件用工程原 id；具名描述文件则对齐到它的 App ID
-          BID="com.framecraft.camera"
-          if [ "$PROFILE_BUNDLE" != "*" ] && [ -n "$PROFILE_BUNDLE" ]; then BID="$PROFILE_BUNDLE"; fi
-          echo "BUILD_BUNDLE=$BID" >> "$GITHUB_ENV"
-
-          xcodebuild archive \
+          xcodebuild build \
             -project FrameCraft.xcodeproj \
             -scheme FrameCraft \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/FrameCraft.xcarchive \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE="$PROFILE_UUID" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BID" \
-            | tee build/archive.log
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build/build.log
 
-      # ---------- 4. 导出 IPA ----------
-      - name: 导出 IPA
-        if: success()
+      # ---------- 2. 打成 Payload/xxx.app 的 zip，后缀改成 .ipa ----------
+      - name: 打包 IPA
         run: |
           set -euo pipefail
-          cat > build/ExportOptions.plist <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>$EXPORT_METHOD</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>teamID</key><string>$TEAM_ID</string>
-            <key>stripSwiftSymbols</key><true/>
-            <key>compileBitcode</key><false/>
-            <key>destination</key><string>export</string>
-            <key>provisioningProfiles</key>
-            <dict>
-              <key>$BUILD_BUNDLE</key><string>$PROFILE_NAME</string>
-            </dict>
-          </dict>
-          </plist>
-          EOF
+          APP_DIR="build/DerivedData/Build/Products/Release-iphoneos"
+          APP=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::没找到 .app，看上面的编译日志"
+            exit 1
+          fi
+          echo "APP = $APP"
 
-          xcodebuild -exportArchive \
-            -archivePath build/FrameCraft.xcarchive \
-            -exportOptionsPlist build/ExportOptions.plist \
-            -exportPath build/ipa \
-            | tee build/export.log
+          rm -rf build/Payload build/out
+          mkdir -p build/Payload build/out
+          cp -R "$APP" build/Payload/
+          APPNAME=$(basename "$APP" .app)
+          echo "APP_NAME=$APPNAME" >> "$GITHUB_ENV"
+          cp build/Payload/"$APPNAME.app"/Info.plist build/out/Info.plist 2>/dev/null || true
 
-          ls -la build/ipa
+          cd build
+          # -y 保留符号链接，否则 .app 里的 framework 链接会断
+          zip -qry "out/${APPNAME}-unsigned.ipa" Payload
 
-      # ---------- 5. 结果与失败摘要 ----------
-      - name: 汇总
-        if: always()
+          echo "=== 产物 ==="
+          ls -lh "out/${APPNAME}-unsigned.ipa"
+          echo
+          echo "=== 内部结构（前 14 行）==="
+          unzip -l "out/${APPNAME}-unsigned.ipa" | head -14
+
+      # ---------- 3. 交付前的自检：这三点不对，签名工具会拒 ----------
+      - name: 自检
+        if: success()
         run: |
+          set -uo pipefail
+          APP="build/Payload/$APP_NAME.app"
+          BIN="$APP/$APP_NAME"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist")
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          MINSDK=$(/usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist" 2>/dev/null || echo "-")
+          ARCHS=$(lipo -archs "$BIN" 2>/dev/null || echo "?")
           {
             echo "### 打包结果"
             echo
-            if ls build/ipa/*.ipa >/dev/null 2>&1; then
-              for f in build/ipa/*.ipa; do
-                echo "**成功**：\`$(basename "$f")\`  $(du -h "$f" | cut -f1)"
-              done
-              echo
-              echo "bundle id: \`${BUILD_BUNDLE:-?}\` · 导出方式: \`${EXPORT_METHOD:-?}\` · 团队: \`${TEAM_ID:-?}\`"
-              echo
-              echo "> 安装前确认：这台 iPhone 的 UDID 在描述文件里（登记设备数 ${PROFILE_DEVCNT:-?}）。"
-              echo "> 不在的话，装到手机时会报「无法安装此 App」。"
-            else
-              echo "**失败** —— 错误行："
-              echo
-              echo '```'
-              grep -hE "error:|Error Domain|failed|Provisioning|code ?sign" build/archive.log build/export.log 2>/dev/null \
-                | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' | sort -u | head -40
-              echo '```'
-            fi
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 可执行文件 | \`$APP_NAME\` |"
+            echo "| Bundle ID | \`$BUNDLE_ID\` |"
+            echo "| 版本 | $VER |"
+            echo "| 最低系统 | $MINSDK |"
+            echo "| 架构 | $ARCHS |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          fail=0
+          if [ ! -f "$BIN" ]; then echo "::error::缺少可执行文件 $BIN"; fail=1; fi
+          if codesign -dv "$APP" >/dev/null 2>&1; then
+            echo "::warning::这个 .app 仍带签名，部分工具会拒绝二次签"
+            echo "仍带签名（部分工具会拒绝二次签）" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "未签名 ✓ 符合预期" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$ARCHS" != "arm64" ]; then
+            echo "::error::架构是 '$ARCHS'，真机需要 arm64"
+            fail=1
+          fi
+          exit $fail
+
+      # ---------- 4. 失败时给出可读的错误行 ----------
+      - name: 汇总错误
+        if: failure()
+        run: |
+          {
+            echo "### 失败"
+            echo
+            echo '```'
+            grep -E "error:|BUILD FAILED|No such file|not found" build/build.log 2>/dev/null \
+              | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' | sort -u | head -40
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传 IPA
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: FrameCraft-ipa
+          name: FrameCraft-unsigned-ipa
           path: |
-            build/ipa/*.ipa
-            build/ExportOptions.plist
+            build/out/*.ipa
+            build/out/Info.plist
           if-no-files-found: warn
-
-      - name: 清理钥匙串
-        if: always()
-        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          retention-days: 30

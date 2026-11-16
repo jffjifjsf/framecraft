@@ -94,13 +94,18 @@ xcodebuild -list -project FrameCraft.xcodeproj          # 先验证工程可解�
 TEAM_ID=你的团队ID ./build.sh                            # 出真机包
 ```
 
-### 云端（没有 Mac 也能验编译）
+### 云端（没有 Mac 也能出 IPA）
 
-仓库自带 `.github/workflows/ios-build.yml`，push 即触发：
+仓库自带两条 GitHub Actions 流水线，push 到 `main` 即触发：
 
-- `runs-on: macos-15`，Xcode 16.x
-- `CODE_SIGNING_ALLOWED=NO` 绕开签名，**不需要 Apple 开发者账号**
-- 编译错误自动汇总到 Actions 摘要页，不用翻几千行日志
+| Workflow | 作用 |
+|---|---|
+| `ios-build.yml` | 编译校验。`CODE_SIGNING_ALLOWED=NO` 绕开签名，**不需要开发者账号**；错误自动汇总到摘要页 |
+| `ios-ipa.yml` | 产出**未签名 IPA**。Release/arm64 编译后打成 `Payload/FrameCraft.app` 结构 |
+
+拿到 IPA：仓库 **Actions** → 最新一次 `iOS 无签名 IPA` → 页面底部 **Artifacts** → `FrameCraft-unsigned-ipa`。
+
+这个 IPA 不含任何签名，用你自己的证书签一次即可安装：轻松签 / 全能签 / Sideloadly / TrollStore 都能直接吃。CI 会先自检三件事——可执行文件在、架构是 arm64、确实未签名，任一不对直接失败，不会把半成品丢给你。
 
 ## 已知限制
 
@@ -108,7 +113,7 @@ TEAM_ID=你的团队ID ./build.sh                            # 出真机包
 - **人脸链路必须真机验证**。iOS 模拟器没有摄像头，`Vision` 检不出人脸
 - `captureDevicePointConverted` 在前置 + `resizeAspectFill` 下的方向映射需真机确认
 - 实时分析跑在 `framecraft.video` 队列、10fps 节流；Debug 构建偏慢，性能请用 Release 测
-- 出 IPA 需要签名证书，CI 只验证编译，不产出可安装包
+- CI 产出的 IPA 是**未签名**的，需自行签名后安装
 
 ## 目录结构
 
