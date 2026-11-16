@@ -18,6 +18,8 @@ struct CameraView: View {
     @State private var grid: GridMode = .thirds
     @State private var smartCrop = true
     @State private var stageSize: CGSize = .zero
+    /// 控制面板实际高度：画幅引导框要躲开它，否则竖幅框会有一截钻到面板底下
+    @State private var panelHeight: CGFloat = 0
     @State private var review: ReviewPayload?
     @State private var showSpec = false
     @State private var showAlbum = false
@@ -32,17 +34,17 @@ struct CameraView: View {
     @State private var pinchAnchor: CGFloat = 1
 
     var body: some View {
-        GeometryReader { geo in
-            let top = geo.safeAreaInsets.top
-            let bottom = geo.safeAreaInsets.bottom
-            VStack(spacing: 0) {
-                viewfinder(topInset: top)
-                controlPanel(bottomInset: bottom)
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-            .background(Theme.bg)
+        ZStack(alignment: .bottom) {
+            // ① 画布层：预览、构图叠加、对焦框共用同一坐标系，整体铺到屏幕四边
+            viewfinder
+
+            // ② 界面层：完全摆在安全区内。
+            //    分层之后"被状态栏/灵动岛挡住"在结构上就不会发生，
+            //    不用再手算 topInset —— 之前 GeometryReader 上挂了 ignoresSafeArea，
+            //    读到的 safeAreaInsets 全是 0，圆环才会顶到时间下面去
+            chrome
         }
-        .ignoresSafeArea()
+        .background(Theme.bg)
         .preferredColorScheme(.dark)
         .onAppear { camera.start() }
         .onDisappear { camera.stop() }
@@ -67,24 +69,13 @@ struct CameraView: View {
         }
         .sheet(isPresented: $showSpec) { SpecView() }
         .sheet(isPresented: $showAlbum) { AlbumView(album: album) }
-        .overlay(alignment: .bottom) {
-            if let t = toastText {
-                Text(t)
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(Capsule().fill(Theme.panel2))
-                    .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
-                    .foregroundColor(Color(white: 0.9))
-                    .padding(.bottom, 96)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-        }
     }
 
     // MARK: - 取景区
 
-    private func viewfinder(topInset: CGFloat) -> some View {
+    /// 画布。预览、构图叠加、对焦框三者用同一套归一化坐标，
+    /// 必须待在同一个容器里 —— 一旦各自忽略安全区，框就会和画面错位
+    private var viewfinder: some View {
         ZStack {
             if camera.mode == .demo, let img = camera.demoImage {
                 Image(uiImage: img)
@@ -108,8 +99,6 @@ struct CameraView: View {
 
             focusReticle
 
-            hud(topInset: topInset)
-
             Color.white
                 .opacity(flashOpacity)
                 .allowsHitTesting(false)
@@ -124,6 +113,7 @@ struct CameraView: View {
                     .onChange(of: g.size) { newSize in updateStage(newSize) }
             }
         )
+        .ignoresSafeArea()
     }
 
     /// 点按的一下要有回执：没有这个框，用户不知道刚才那下到底生效没有
@@ -140,67 +130,92 @@ struct CameraView: View {
         .allowsHitTesting(false)
     }
 
-    private func hud(topInset: CGFloat) -> some View {
+    /// 界面层：一条竖排，从安全区顶部到底部。
+    /// 顶部只放读数，底部依次是 Toast → 构图提示 → 控制面板，
+    /// 三者是 VStack 的兄弟节点，所以不会互相压住
+    private var chrome: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 11) {
-                ScoreRing(score: camera.evaluation.total)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(camera.denied ? "相机权限被拒，正在播放演示场景"
-                                       : camera.evaluation.verdict)
-                        .font(.system(size: 13.5, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(2)
-                        .shadow(color: .black.opacity(0.85), radius: 4)
-
-                    HStack(spacing: 5) {
-                        Chip(text: camera.evaluation.scene)
-                        Chip(text: camera.evaluation.rule, accent: true)
-                        Chip(text: String(format: "%.1f° 水平",
-                                          Double(abs(camera.metrics?.tilt ?? 0))))
-                    }
-                }
-
-                Spacer(minLength: 0)
-
-                Button { showSpec = true } label: {
-                    Image(systemName: "info.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(.white.opacity(0.9))
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(Color.white.opacity(0.14)))
-                }
-                .buttonStyle(PressableStyle())
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, topInset + 8)
+            hud
 
             Spacer(minLength: 0)
 
-            if showsZoomBar {
-                zoomPills
-                    .padding(.bottom, 9)
+            if let t = toastText {
+                toastChip(t)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            VStack(spacing: 6) {
-                if camera.metrics == nil {
-                    TipRow(text: "画面缺少明确主体 —— 对准有明暗或颜色落差的物体，或靠近一点。")
-                } else if camera.evaluation.tips.isEmpty && wideSubjectHint == nil {
-                    TipRow(text: "主体位置、占比、水平都到位，按你的想法按下快门。", ok: true)
-                } else {
-                    // 有画幅提示时只留最要紧的一条，免得把新提示挤出屏幕
-                    let limit = wideSubjectHint == nil ? 2 : 1
-                    ForEach(Array(camera.evaluation.tips.prefix(limit))) { tip in
-                        TipRow(text: tip.text)
-                    }
-                    if let hint = wideSubjectHint {
-                        TipRow(text: hint)
-                    }
+            tipsBlock
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+
+            controlPanel
+        }
+    }
+
+    private func toastChip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(Theme.panel2))
+            .overlay(Capsule().stroke(Theme.hairline, lineWidth: 1))
+            .foregroundColor(Color(white: 0.9))
+    }
+
+    private var tipsBlock: some View {
+        VStack(spacing: 6) {
+            if camera.metrics == nil {
+                TipRow(text: "画面缺少明确主体 —— 对准有明暗或颜色落差的物体，或靠近一点。")
+            } else if camera.evaluation.tips.isEmpty && wideSubjectHint == nil {
+                TipRow(text: "主体位置、占比、水平都到位，按你的想法按下快门。", ok: true)
+            } else {
+                // 有画幅提示时只留最要紧的一条，免得把新提示挤出屏幕
+                let limit = wideSubjectHint == nil ? 2 : 1
+                ForEach(Array(camera.evaluation.tips.prefix(limit))) { tip in
+                    TipRow(text: tip.text)
+                }
+                if let hint = wideSubjectHint {
+                    TipRow(text: hint)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 10)
         }
+    }
+
+    private var hud: some View {
+        HStack(alignment: .top, spacing: 11) {
+            ScoreRing(score: camera.evaluation.total)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(camera.denied ? "相机权限被拒，正在播放演示场景"
+                                   : camera.evaluation.verdict)
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .shadow(color: .black.opacity(0.85), radius: 4)
+
+                HStack(spacing: 5) {
+                    Chip(text: camera.evaluation.scene)
+                    Chip(text: camera.evaluation.rule, accent: true)
+                    Chip(text: String(format: "%.1f° 水平",
+                                      Double(abs(camera.metrics?.tilt ?? 0))))
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Button { showSpec = true } label: {
+                Image(systemName: "info.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundColor(.white.opacity(0.9))
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(Color.white.opacity(0.14)))
+            }
+            .buttonStyle(PressableStyle())
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
     }
 
     /// 变焦是构图软件里唯一能立刻改变"主体占比"的旋钮：
@@ -256,8 +271,15 @@ struct CameraView: View {
 
     // MARK: - 控制区
 
-    private func controlPanel(bottomInset: CGFloat) -> some View {
-        VStack(spacing: 9) {
+    /// 控制面板。变焦键从这里进来，不再浮在画面中间挡主体 ——
+    /// 它是"控制"，就该和其他控制待在一起
+    private var controlPanel: some View {
+        VStack(spacing: 8) {
+            if showsZoomBar {
+                zoomPills
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
             HStack(spacing: 6) {
                 ForEach(0..<AspectPreset.all.count, id: \.self) { idx in
                     let opt = AspectPreset.all[idx]
@@ -343,9 +365,17 @@ struct CameraView: View {
             .padding(.top, 2)
         }
         .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, max(bottomInset, 8) + 6)
-        .background(Theme.panel)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        // 面板底色往 Home 指示条那片区域延伸，内容仍留在安全区内
+        .background(Theme.panel.ignoresSafeArea(edges: .bottom))
+        .background(
+            GeometryReader { g in
+                Color.clear
+                    .onAppear { panelHeight = g.size.height }
+                    .onChange(of: g.size) { newSize in panelHeight = newSize.height }
+            }
+        )
     }
 
     // MARK: - 几何
@@ -358,7 +388,11 @@ struct CameraView: View {
 
     private func cropRect() -> CGRect {
         guard stageSize.width > 10, stageSize.height > 10 else { return .zero }
-        return CompositionEngine.suggestCrop(size: stageSize,
+        // 只用"面板以上的可见部分"来算构图框，否则 9:16 这类竖幅框
+        // 会有一部分被控制面板盖住，看起来像画幅算错了
+        let visible = CGSize(width: stageSize.width,
+                             height: max(160, stageSize.height - panelHeight))
+        return CompositionEngine.suggestCrop(size: visible,
                                              aspect: AspectPreset.all[aspectIndex].value,
                                              metrics: camera.metrics,
                                              smart: smartCrop)
@@ -369,10 +403,11 @@ struct CameraView: View {
     /// viewPoint 用来画框，devicePoint 交给相机对焦——两者坐标系不同，不能混用
     private func handleTap(viewPoint: CGPoint, devicePoint: CGPoint) {
         guard camera.mode == .camera else { return }
-        // 底部这条被提示条和变焦键占着，点它们是想要调参而不是想对焦。
+        // 底部这条被提示条和控制面板占着，点它们是想要调参而不是想对焦。
         // 不挡的话，点一下 2x 会顺手把焦点挪到画面下沿，拍人像时正好落在衣服上
         guard stageSize.height > 10 else { return }
-        let reserved = min(130, stageSize.height * 0.25)
+        let reserved = panelHeight > 0 ? panelHeight + 8
+                                       : min(130, stageSize.height * 0.25)
         guard viewPoint.y > 70,
               viewPoint.y < stageSize.height - reserved else { return }
 
