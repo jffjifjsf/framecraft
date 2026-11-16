@@ -1,8 +1,12 @@
 # FrameCraft
 
+[![iOS 编译校验](https://github.com/jffjifjsf/framecraft/actions/workflows/ios-build.yml/badge.svg?branch=main)](https://github.com/jffjifjsf/framecraft/actions/workflows/ios-build.yml)
+
 > 实时构图辅助相机。取景时告诉你主体在哪、差在哪里；按下快门后给一份可以左右拖动对比的诊断。
 
 原生 iOS 应用，SwiftUI + AVFoundation + Vision，**零第三方依赖**，4428 行 Swift。
+
+**编译状态**：GitHub Actions 在 macOS 15 + Xcode 16.4 上实测 `BUILD SUCCEEDED`（模拟器目标，不签名）。
 
 ---
 
