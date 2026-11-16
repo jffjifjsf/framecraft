@@ -1,0 +1,23 @@
+# Windows 的 Git 默认把文本文件的换行转成 CRLF（autocrlf=true）。
+# 对 Swift 源码无害，但对 shell 脚本是致命的：
+#   CRLF 的 build.sh 在 macOS 上会报 bad interpreter: /bin/bash^M
+# 所以这里显式声明：以下文件在仓库里永远是 LF，不许转换。
+
+* text=auto eol=lf
+
+*.sh       text eol=lf
+*.swift    text eol=lf
+*.pbxproj  text eol=lf
+*.xcscheme text eol=lf
+*.plist    text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.md       text eol=lf
+*.json     text eol=lf
+
+# 二进制：不许做任何换行处理，否则图标和 pbxproj 之外的资源会被改坏
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.p12  binary
+*.mobileprovision binary
