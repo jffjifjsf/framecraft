@@ -19,9 +19,16 @@ on:
 
 jobs:
   compile:
-    name: 模拟器编译（不签名）
-    runs-on: macos-15
-    timeout-minutes: 20
+    name: 模拟器编译 · ${{ matrix.runner }}
+    # 两个池同时排队：arm64(macos-15) 在晚间高峰经常 15 分钟内分配不到机器
+    # 而被 GitHub 直接 cancelled（runner_name 为空、steps 为 0）。
+    # x64(macos-15-intel) 通常更快，任一跑通即可，另一个不必等。
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v5
