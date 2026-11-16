@@ -9,14 +9,18 @@
       2. 提前报出会直接导致"打包成功但装不上"的问题（App ID 对不上、已过期、没有设备）
       3. 生成两个 base64 文件并复制到剪贴板，直接粘进 GitHub 网页
 
+.PARAMETER KeysDir
+    把 .p12 和 .mobileprovision 放进这个文件夹，脚本自己找。
+    不给 -P12 / -Profile 时走这条路。文件夹不存在会自动创建并在资源管理器里打开。
+
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File prepare-secrets.ps1 `
-        -P12 "C:\keys\dev.p12" -Profile "C:\keys\dev.mobileprovision"
+    powershell -ExecutionPolicy Bypass -File prepare-secrets.ps1 -KeysDir "C:\FrameCraft-work\keys"
 #>
 
 param(
-    [Parameter(Mandatory = $true)][string]$P12,
-    [Parameter(Mandatory = $true)][string]$Profile
+    [string]$P12,
+    [string]$Profile,
+    [string]$KeysDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,6 +32,55 @@ Line '================================================'
 Line ' FrameCraft  签名材料检查'
 Line '================================================'
 Line ''
+
+# ---------------------------------------------------------------- 0. 没给路径就去文件夹里找
+if (-not $P12 -or -not $Profile) {
+    if (-not $KeysDir) { $KeysDir = Join-Path (Get-Location) 'keys' }
+    if (-not (Test-Path $KeysDir)) {
+        New-Item -ItemType Directory -Path $KeysDir -Force | Out-Null
+    }
+    $certs = @(Get-ChildItem $KeysDir -Filter *.p12 -File -ErrorAction SilentlyContinue)
+    $profs = @(Get-ChildItem $KeysDir -Filter *.mobileprovision -File -ErrorAction SilentlyContinue)
+
+    if (-not $P12 -and $certs.Count -ge 1) {
+        $P12 = $certs[0].FullName
+        if ($certs.Count -gt 1) {
+            Line ("[注意] {0} 里有 {1} 个 .p12，用的是第一个：{2}" -f $KeysDir, $certs.Count, $certs[0].Name)
+            $certs | Select-Object -Skip 1 | ForEach-Object { Line ("       另有一个: {0}（没用）" -f $_.Name) }
+            Line ''
+        }
+    }
+    if (-not $Profile -and $profs.Count -ge 1) {
+        $Profile = $profs[0].FullName
+        if ($profs.Count -gt 1) {
+            Line ("[注意] {0} 里有 {1} 个描述文件，用的是第一个：{2}" -f $KeysDir, $profs.Count, $profs[0].Name)
+            $profs | Select-Object -Skip 1 | ForEach-Object { Line ("       另有一个: {0}（没用）" -f $_.Name) }
+            Line ''
+        }
+    }
+
+    if (-not $P12 -or -not $Profile) {
+        Line '还没准备好文件。请把这个文件夹打开，把两个文件放进去：'
+        Line ''
+        Line ("   {0}" -f $KeysDir)
+        Line ''
+        Line '需要的是：'
+        Line '   1. 一个 .p12            —— 签名证书（含私钥）'
+        Line '   2. 一个 .mobileprovision —— 描述文件'
+        Line ''
+        if (-not $P12)      { Line '   [缺] .p12' }
+        if (-not $Profile)  { Line '   [缺] .mobileprovision' }
+        Line ''
+        Line '放好后重新双击 make-signing-secrets.bat 即可。'
+        if (-not $env:FRAMECRAFT_NO_EXPLORER) {
+            try { Start-Process explorer.exe $KeysDir } catch { }
+        }
+        Line ''
+        Line 'Press any key to exit...'
+        try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
+        exit 1
+    }
+}
 
 foreach ($p in @($P12, $Profile)) {
     if (-not (Test-Path $p)) { Line "[FAIL] 文件不存在: $p"; exit 1 }

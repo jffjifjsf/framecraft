@@ -9,7 +9,9 @@
 
 ### ① 生成 Secrets 的值
 
-把 `.p12` 和 `.mobileprovision` **两个文件一起选中**，拖到工作区根目录的 `make-signing-secrets.bat` 上。
+把 `.p12` 和 `.mobileprovision` 放进工作区根目录的 `keys` 文件夹，然后双击同目录的 `make-signing-secrets.bat`。
+
+> 也可以把两个文件一起拖到 `.bat` 上，效果一样。文件夹方式更省事，脚本会自己找。
 
 它会：
 
