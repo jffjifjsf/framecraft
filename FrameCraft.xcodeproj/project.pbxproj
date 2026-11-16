@@ -67,6 +67,7 @@
 				A1B2C3D4000000000000002D /* Frameworks */,
 				A1B2C3D40000000000000003 /* Products */,
 			);
+			path = FrameCraft;
 			sourceTree = "<group>";
 		};
 		A1B2C3D40000000000000010 /* App */ = {
