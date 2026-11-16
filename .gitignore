@@ -26,3 +26,9 @@ desktop.ini
 *.provisionprofile
 AuthKey_*.p8
 Secrets.plist
+
+# 签名材料一律不进仓库
+*.b64
+signing/*.b64
+*.key
+*.pem
