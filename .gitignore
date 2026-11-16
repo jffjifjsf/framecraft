@@ -1,0 +1,28 @@
+# ---- Xcode 构建产物 ----
+build/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM
+*.dSYM.zip
+
+# ---- Xcode 用户态文件（每人不同，不该进仓库）----
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# ---- 系统垃圾 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 签名与密钥：绝对不能提交 ----
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+*.provisionprofile
+AuthKey_*.p8
+Secrets.plist

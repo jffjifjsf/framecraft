@@ -1,0 +1,77 @@
+name: iOS 编译校验
+
+# 只做一件事：在 macOS 上编一遍，回答"这些代码到底能不能编译"。
+# 不签名、不打包 IPA、不需要 Apple 开发者账号。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  compile:
+    name: 模拟器编译（不签名）
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 显示可用 Xcode
+        run: |
+          ls /Applications | grep -i xcode || true
+          xcodebuild -version
+
+      # ① 先验证工程文件能被解析。手写的 project.pbxproj 如果结构有错，
+      #    这一步会立刻报出来，不必等完整编译
+      - name: 解析工程
+        run: xcodebuild -list -project FrameCraft.xcodeproj
+
+      - name: 核对关键配置
+        run: |
+          xcodebuild -showBuildSettings \
+            -project FrameCraft.xcodeproj \
+            -scheme FrameCraft \
+            -destination 'generic/platform=iOS Simulator' \
+          | grep -E "PRODUCT_BUNDLE_IDENTIFIER|IPHONEOS_DEPLOYMENT_TARGET|SWIFT_VERSION|TARGETED_DEVICE_FAMILY" \
+          | sed -E 's/^ +//' | sort -u
+
+      # ② 真正编译。CODE_SIGNING_ALLOWED=NO 是绕开签名的关键，
+      #    没有它这一步会因为缺开发者团队而失败
+      - name: 编译
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -project FrameCraft.xcodeproj \
+            -scheme FrameCraft \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build/build.log
+
+      # ③ 把 error 汇总到 Actions 摘要页，不用在几千行日志里翻
+      - name: 汇总编译错误
+        if: always()
+        run: |
+          {
+            echo "## 编译结果"
+            if [ -f build/build.log ] && grep -q "BUILD SUCCEEDED" build/build.log; then
+              echo 'BUILD SUCCEEDED'
+            else
+              echo 'BUILD FAILED'
+              echo '```'
+              grep -E "error:" build/build.log | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' | sort -u | head -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传完整日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build/build.log
+          if-no-files-found: ignore
