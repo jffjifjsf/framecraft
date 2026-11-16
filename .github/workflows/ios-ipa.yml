@@ -15,7 +15,7 @@ on:
       - '.gitattributes'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   ipa:
@@ -114,7 +114,34 @@ jobs:
           fi
           exit $fail
 
-      # ---------- 4. 失败时给出可读的错误行 ----------
+      # ---------- 4. 传到 Release：artifacts 下载要登录，Release 资源不用 ----------
+      - name: 发布到 Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IPA_NAME: FrameCraft-unsigned.ipa
+        run: |
+          set -euo pipefail
+          TAG="unsigned-ipa-latest"
+          IPA=$(ls build/out/*.ipa | head -1)
+          cp "$IPA" "build/out/$IPA_NAME"
+
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --title "未签名 IPA（自动构建）" \
+              --notes "每次 push 到 main 自动覆盖更新。这个 IPA 不含签名，用你自己的证书签一次即可安装。" \
+              --latest
+
+          gh release upload "$TAG" "build/out/$IPA_NAME" --clobber
+
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${IPA_NAME}"
+          echo "IPA_URL=$URL" >> "$GITHUB_ENV"
+          {
+            echo
+            echo "**下载（无需登录）**：$URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------- 5. 失败时给出可读的错误行 ----------
       - name: 汇总错误
         if: failure()
         run: |
