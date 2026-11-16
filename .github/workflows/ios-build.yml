@@ -17,6 +17,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Actions 的原始日志必须登录才能下载（匿名请求返回 403），
+# 所以失败时由 workflow 自己把错误摘要推到 ci-logs 分支，
+# 本机无需 Mac、无需 token 就能读到具体是哪几行报错。
+permissions:
+  contents: write
+
 jobs:
   compile:
     name: 模拟器编译 · ${{ matrix.runner }}
@@ -101,6 +107,47 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ④ 失败时把错误摘要推到 ci-logs 分支（不碰 main，避免和本地提交打架）。
+      #    只让 intel 那个 job 推，两个 job 同时写会冲突。
+      - name: 发布错误摘要到 ci-logs 分支
+        if: failure() && matrix.runner == 'macos-15-intel'
+        run: |
+          mkdir -p .ci
+          {
+            echo "# 最近一次编译错误"
+            echo
+            echo "- run: $GITHUB_RUN_ID"
+            echo "- sha: $GITHUB_SHA"
+            echo "- 时间: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+            echo
+            echo "## 编译器 error 行"
+            echo
+            echo '```'
+            if grep -qE "error:" build/build.log 2>/dev/null; then
+              grep -E "error:" build/build.log \
+                | sed -E 's|^/Users/runner/work/[^/]+/[^/]+/||' \
+                | sed -E 's|^.*/FrameCraft/||' \
+                | sort -u | head -120
+            else
+              echo "(没有 error: 行，失败在更早阶段)"
+              grep -iE "error|failed|cannot|unable|not found" build/build.log 2>/dev/null | head -40
+            fi
+            echo '```'
+            echo
+            echo "## 日志末尾 150 行"
+            echo
+            echo '```'
+            tail -150 build/build.log 2>/dev/null || echo "(无日志)"
+            echo '```'
+          } > .ci/errors.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B ci-logs
+          git add -f .ci/errors.md
+          git commit -m "ci: run $GITHUB_RUN_ID 的编译错误" || true
+          git push -f origin ci-logs || echo "push ci-logs 失败（不影响结论）"
 
       - name: 上传完整日志
         if: always()
