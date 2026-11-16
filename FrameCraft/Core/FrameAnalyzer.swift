@@ -208,7 +208,7 @@ struct FrameAnalyzer {
                 + integral[y0 * W1 + x0]
         }
 
-        var totalSal = integral[ah * W1 + aw]
+        let totalSal = integral[ah * W1 + aw]
         if totalSal <= 0 { return nil }
 
         // ---- 多尺度窗口搜索：均值显著度 × 质量占比 ----

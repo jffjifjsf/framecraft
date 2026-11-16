@@ -336,7 +336,7 @@ final class CameraController: NSObject, ObservableObject {
                     device.focusMode = .autoFocus
                 }
                 if device.isExposurePointOfInterestSupported,
-                   device.isExposureModeSupported(.autoExposure) {
+                   device.isExposureModeSupported(.autoExpose) {
                     device.exposurePointOfInterest = devicePoint
                     device.exposureMode = .autoExpose
                 }

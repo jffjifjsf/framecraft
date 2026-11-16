@@ -92,8 +92,9 @@ enum FaceAnalyzer {
         } catch {
             return nil
         }
-        // 不同 SDK 的 results 静态类型不一致，显式转型两边都兼容
-        guard let results = request.results as? [VNFaceObservation], !results.isEmpty else {
+        // Xcode 16 的 SDK 里 request.results 已经是 [VNFaceObservation]?，
+        // 再做一次条件转型是空操作（会报 warning），直接绑定即可
+        guard let results = request.results, !results.isEmpty else {
             return nil
         }
 
