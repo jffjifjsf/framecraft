@@ -20,7 +20,9 @@ permissions:
 jobs:
   ipa:
     name: 编译并打包未签名 IPA
-    runs-on: macos-15
+    # 用 Intel 池：编译目标是 arm64 真机包，跑在 x86_64 主机上只是交叉编译，
+    # 产物完全一样。而 arm64 池在晚间经常排队 10 分钟以上甚至被取消
+    runs-on: macos-15-intel
     timeout-minutes: 40
 
     steps:
